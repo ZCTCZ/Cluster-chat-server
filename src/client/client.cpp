@@ -6,7 +6,11 @@ User g_currentUser;                     // 全局变量，记录当前登录的�
 std::vector<User> g_friendList;         // 全局变量，记录当前用户的好友列表
 std::vector<Group> g_groupList;         // 全局变量，记录当前用户的群组列表
 std::vector<std::string> g_messageList; // 全局变量，记录当前用户的离线消息
-bool mainMenuRunning = false; // 全局变量声明，记录主菜单是否正在运行
+bool mainMenuRunning = false;           // 全局变量，记录主菜单是否正在运行
+
+std::mutex mtx;
+std::condition_variable cv;
+std::atomic<bool> loginSuccess = {false}; // 登录成功标志
 
 // 系统支持的客户端命令列表
 unordered_map<std::string, std::string> commandMap = {
@@ -57,7 +61,7 @@ void showCurrentUserData(unsigned int socketfd, std::string str)
             cout << msg << endl;
         }
 
-        memset((void*)&g_messageList, 0, sizeof(g_messageList));
+        memset((void *)&g_messageList, 0, sizeof(g_messageList));
     }
 
     if (!g_friendList.empty())
@@ -67,7 +71,7 @@ void showCurrentUserData(unsigned int socketfd, std::string str)
         for (const auto &e : g_friendList)
         {
             cout << "ID: " << std::setw(3) << std::left << e.getId()
-                 << "name: " << std::setw(10) << std::left << e.getName()
+                 << "name: " << std::setw(15) << std::left << e.getName()
                  << "state: " << std::setw(10) << std::left << e.getState()
                  << endl;
         }
@@ -80,12 +84,12 @@ void showCurrentUserData(unsigned int socketfd, std::string str)
         for (const auto &e : g_groupList)
         {
             cout << "group  ID: " << std::setw(3) << std::left << e.getGroupId()
-                 << "group name: " << std::setw(10) << std::left << e.getGroupName()
+                 << "group name: " << std::setw(15) << std::left << e.getGroupName()
                  << "desc: " << e.getGroupDescription() << std::left << endl;
             for (const auto &user : e.getGroupMembers())
             {
                 cout << "member ID: " << std::setw(3) << std::left << user.getId()
-                     << "name: " << std::setw(10) << std::left << user.getName()
+                     << "name: " << std::setw(15) << std::left << user.getName()
                      << "state: " << std::setw(10) << std::left << user.getState()
                      << "role: " << std::setw(10) << std::left << user.getRole() << endl;
             }
@@ -113,7 +117,7 @@ int loginMenu()
 }
 
 /**
- * @brief 注册caoz
+ * @brief 注册操作
  * {
  *      "msgId": REGISTER_MSG,
  *      ""name": "username",
@@ -145,28 +149,24 @@ void registerOpt(unsigned int socketfd)
     }
     else
     {
-        char recvData[1024] = {0};
-        ssize_t len = recv(socketfd, recvData, sizeof(recvData), 0); // 接收服务器的响应
-        if (len == -1)
-        {
-            perror("recv error");
-            cerr << "register failed" << endl;
-        }
-        else
-        {
-            nlohmann::json recvJson = nlohmann::json::parse(recvData); // 解析服务器的响应
-            if (recvJson["code"] == 0)                                 // 注册成功
-            {
-                cout << "id:" << recvJson["id"] << "    " << "name:" << recvJson["name"] << endl;
-            }
-            else
-            {
-                cout << name << " is already registered" << endl;
-            }
-
-            cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
-        }
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait(lock);           // 等待被处理注册响应消息的线程唤醒
     }
+}
+
+void handleRegisterReply(const nlohmann::json &recvJson)
+{
+    if (recvJson["code"] == 0) // 注册成功
+    {
+        cout << "id:" << recvJson["id"] << "    " << "name:" << recvJson["name"] << endl;
+    }
+    else
+    {
+        cout << "The name is already registered" << endl;
+    }
+
+    cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
+    cv.notify_one(); // 唤醒等主线程
 }
 
 /**
@@ -200,121 +200,111 @@ void loginOpt(unsigned int socketfd)
     }
     else
     {
-        char recvData[1024] = {0};
-        ssize_t len = recv(socketfd, recvData, sizeof(recvData), 0);
-        if (len == -1)
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait(lock);           // 等待被处理登录响应消息的线程唤醒
+        if (loginSuccess.load()) // 登录成功
         {
-            perror("recv error");
-            cerr << "login failed" << endl;
-        }
-        else
-        {
-            nlohmann::json recvJson = nlohmann::json::parse(recvData); // 解析服务器的响应
-            {
-                if (recvJson["code"] == 0) // 登录成功
-                {
-                    mainMenuRunning = true; // 设置主菜单正在运行
+            // 显示登录成功的用户信息
+            showCurrentUserData();
 
-                    memset((void *)&g_currentUser, 0, sizeof(User));
-                    memset((void *)&g_friendList, 0, sizeof(g_friendList));
-                    memset((void *)&g_groupList, 0, sizeof(g_groupList));
-                    memset((void *)&g_messageList, 0, sizeof(g_messageList));
-
-                    g_currentUser.setId(recvJson["id"].get<unsigned int>());
-                    g_currentUser.setName(recvJson["name"].get<std::string>());
-
-                    if (recvJson.contains("offlineMessage")) // 存在离线消息,将离线消息加入到g_messageList中
-                    {
-                        std::vector<std::string> msgVec = recvJson["offlineMessage"].get<std::vector<std::string>>();
-                        for (const auto &msg : msgVec)
-                        {
-                            nlohmann::json msgJson = nlohmann::json::parse(msg);
-                            std::string str;
-                            if (msgJson["msgId"].get<int>() == PRIVATE_CHAT_MSG)
-                            {
-                                str = "[" + msgJson["time"].get<std::string>() + "]" +
-                                      "[userId:" + std::to_string(msgJson["from"].get<unsigned int>()) + "]" +
-                                      "[name:" + msgJson["user"].get<std::string>() + "]" +
-                                      "said: " + msgJson["message"].get<std::string>();
-                            }
-                            else if (msgJson["msgId"].get<int>() == GROUP_CHAT_MSG)
-                            {
-                                str = "[" + msgJson["time"].get<std::string>() + "]" +
-                                      "[userId:" + std::to_string(msgJson["userId"].get<unsigned int>()) + "]" +
-                                      "[name:" + msgJson["user"].get<std::string>() + "]" +
-                                      "at group[" + std::to_string(msgJson["groupId"].get<unsigned int>()) + "]" +
-                                      "said: " + msgJson["message"].get<std::string>();
-                            }
-                            g_messageList.push_back(str);
-                        }
-                    }
-
-                    if (recvJson.contains("friends")) // 存在好友列表,将好友列表加入到g_friendList中
-                    {
-                        std::vector<std::string> friendVec = recvJson["friends"].get<std::vector<std::string>>();
-                        for (const auto &friendStr : friendVec)
-                        {
-                            nlohmann::json msgJson = nlohmann::json::parse(friendStr);
-                            User user;
-                            user.setId(msgJson["id"].get<unsigned int>());
-                            user.setName(msgJson["name"].get<std::string>());
-                            user.setState(msgJson["state"].get<std::string>());
-                            g_friendList.push_back(user);
-                        }
-                    }
-
-                    if (recvJson.contains("groups")) // 存在群组列表，将群组列表加入到g_groupList中
-                    {
-                        std::vector<std::string> groupVec = recvJson["groups"].get<std::vector<std::string>>();
-                        for (const auto &groupStr : groupVec)
-                        {
-                            nlohmann::json msgJson = nlohmann::json::parse(groupStr);
-                            Group group;
-                            group.setGroupId(msgJson["groupId"].get<unsigned int>());
-                            group.setGroupName(msgJson["groupName"].get<std::string>());
-                            group.setGroupDescription(msgJson["groupDesc"].get<std::string>());
-
-                            std::vector<std::string> membersInfo = msgJson["groupMembers"].get<std::vector<std::string>>();
-                            for (const auto &memberStr : membersInfo)
-                            {
-                                nlohmann::json memberJson = nlohmann::json::parse(memberStr);
-                                GroupUser user;
-                                user.setId(memberJson["id"].get<unsigned int>());
-                                user.setName(memberJson["name"].get<std::string>());
-                                user.setState(memberJson["state"].get<std::string>());
-                                user.setRole(memberJson["role"].get<std::string>());
-                                group.getGroupMembers().push_back(user);
-                            }
-                            g_groupList.push_back(group);
-                        }
-                    }
-
-                    // 控制接收数据的线程，只开启一个
-                    static int receiveTaskRunning = 0;
-                    if (receiveTaskRunning == 0)
-                    {
-                        receiveTaskRunning = 1;
-                        std::thread receiveTask(receiveTaskHandler, socketfd); // 开启一个线程，用于接收服务器的消息
-                        receiveTask.detach();
-                    }
-
-                    // 显示登录成功的用户信息
-                    showCurrentUserData();
-
-                    // 进入聊天主菜单
-                    mainMenu(socketfd);
-                }
-                else if (recvJson["code"] == -1) // 用户状态为已在线，无法重复登录
-                {
-                    cout << recvJson["msg"].get<std::string>() << endl;
-                }
-                else if (recvJson["code"] == -2) // 用户名或者密码错误
-                {
-                    cout << recvJson["msg"].get<std::string>() << endl;
-                }
-            }
+            // 进入聊天主菜单
+            mainMenu(socketfd);
         }
     }
+}
+
+void handleLoginReply(const nlohmann::json &recvJson)
+{
+    if (recvJson["code"] == 0) // 登录成功
+    {
+        mainMenuRunning = true; // 设置主菜单正在运行
+
+        memset((void *)&g_currentUser, 0, sizeof(User));
+        memset((void *)&g_friendList, 0, sizeof(g_friendList));
+        memset((void *)&g_groupList, 0, sizeof(g_groupList));
+        memset((void *)&g_messageList, 0, sizeof(g_messageList));
+
+        g_currentUser.setId(recvJson["id"].get<unsigned int>());
+        g_currentUser.setName(recvJson["name"].get<std::string>());
+
+        if (recvJson.contains("offlineMessage")) // 存在离线消息,将离线消息加入到g_messageList中
+        {
+            std::vector<std::string> msgVec = recvJson["offlineMessage"].get<std::vector<std::string>>();
+            for (const auto &msg : msgVec)
+            {
+                nlohmann::json msgJson = nlohmann::json::parse(msg);
+                std::string str;
+                if (msgJson["msgId"].get<int>() == PRIVATE_CHAT_MSG)
+                {
+                    str = "[" + msgJson["time"].get<std::string>() + "]" +
+                          "[userId:" + std::to_string(msgJson["from"].get<unsigned int>()) + "]" +
+                          "[name:" + msgJson["user"].get<std::string>() + "]" +
+                          "said: " + msgJson["message"].get<std::string>();
+                }
+                else if (msgJson["msgId"].get<int>() == GROUP_CHAT_MSG)
+                {
+                    str = "[" + msgJson["time"].get<std::string>() + "]" +
+                          "[userId:" + std::to_string(msgJson["userId"].get<unsigned int>()) + "]" +
+                          "[name:" + msgJson["user"].get<std::string>() + "]" +
+                          "at group[" + std::to_string(msgJson["groupId"].get<unsigned int>()) + "]" +
+                          "said: " + msgJson["message"].get<std::string>();
+                }
+                g_messageList.push_back(str);
+            }
+        }
+
+        if (recvJson.contains("friends")) // 存在好友列表,将好友列表加入到g_friendList中
+        {
+            std::vector<std::string> friendVec = recvJson["friends"].get<std::vector<std::string>>();
+            for (const auto &friendStr : friendVec)
+            {
+                nlohmann::json msgJson = nlohmann::json::parse(friendStr);
+                User user;
+                user.setId(msgJson["id"].get<unsigned int>());
+                user.setName(msgJson["name"].get<std::string>());
+                user.setState(msgJson["state"].get<std::string>());
+                g_friendList.push_back(user);
+            }
+        }
+
+        if (recvJson.contains("groups")) // 存在群组列表，将群组列表加入到g_groupList中
+        {
+            std::vector<std::string> groupVec = recvJson["groups"].get<std::vector<std::string>>();
+            for (const auto &groupStr : groupVec)
+            {
+                nlohmann::json msgJson = nlohmann::json::parse(groupStr);
+                Group group;
+                group.setGroupId(msgJson["groupId"].get<unsigned int>());
+                group.setGroupName(msgJson["groupName"].get<std::string>());
+                group.setGroupDescription(msgJson["groupDesc"].get<std::string>());
+
+                std::vector<std::string> membersInfo = msgJson["groupMembers"].get<std::vector<std::string>>();
+                for (const auto &memberStr : membersInfo)
+                {
+                    nlohmann::json memberJson = nlohmann::json::parse(memberStr);
+                    GroupUser user;
+                    user.setId(memberJson["id"].get<unsigned int>());
+                    user.setName(memberJson["name"].get<std::string>());
+                    user.setState(memberJson["state"].get<std::string>());
+                    user.setRole(memberJson["role"].get<std::string>());
+                    group.getGroupMembers().push_back(user);
+                }
+                g_groupList.push_back(group);
+            }
+        }
+        cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
+        loginSuccess.store(true); // 设置登录成功标志
+    }
+    else if (recvJson["code"] == -1) // 用户状态为已在线，无法重复登录
+    {
+        cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
+    }
+    else if (recvJson["code"] == -2) // 用户名或者密码错误
+    {
+        cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
+    }
+
+    cv.notify_one(); // 唤醒主线程
 }
 
 // 接收数据的线程的回调函数
@@ -384,6 +374,14 @@ void receiveTaskHandler(unsigned int socketfd)
                         else if (recvJson["msgId"] == GROUP_CHAT_MSG_REPLY)
                         {
                             cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
+                        }
+                        else if (recvJson["msgId"] == LOGIN_MSG_REPLY)
+                        {
+                            handleLoginReply(recvJson);
+                        }
+                        else if (recvJson["msgId"] == REGISTER_MSG_REPLY)
+                        {
+                            handleRegisterReply(recvJson);
                         }
                         else if (recvJson["msgId"] == LOGOUT_MSG_REPLY)
                         {

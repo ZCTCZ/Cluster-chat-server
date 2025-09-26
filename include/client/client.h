@@ -8,18 +8,21 @@
 #include <iostream>
 #include <unordered_map>
 #include <functional>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+
+extern std::mutex mtx;
+extern std::condition_variable cv;
+extern std::atomic<bool> loginSuccess;
+
 using std::cout;
 using std::endl;
 using std::cin;
 using std::cerr;
 using std::unordered_map;
 using std::function;
-
-
-extern User g_currentUser; // 全局变量声明，记录当前登录的用户的信息
-extern std::vector<User> g_friendList; // 全局变量声明，记录当前用户的好友列表
-extern std::vector<Group> g_groupList; // 全局变量声明，记录当前用户的群组列表
-extern bool mainMenuRunning; // 全局变量声明，记录主菜单是否正在运行
 
 // 登录页面
 int loginMenu();
@@ -36,8 +39,14 @@ std::string getCurrentTime();
 // 注册
 void registerOpt(unsigned int socketfd);
 
+// 处理服务器返回的注册响应消息
+void handleRegisterReply(const nlohmann::json &recvJson);
+
 // 登录
 void loginOpt(unsigned int socketfd);
+
+// 处理服务器返回的登录响应消息
+void handleLoginReply(const nlohmann::json& jsn);
 
 // 主菜单
 void mainMenu(unsigned int socketfd);

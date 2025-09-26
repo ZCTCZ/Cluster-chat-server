@@ -40,6 +40,10 @@ int main(int argc, char** argv)
         exit(-1);
     }
 
+    // 连接上了服务器，开启子线程，负责接收服务器发送过来的数据
+    std::thread receiveTask(receiveTaskHandler, fd);
+    receiveTask.detach();
+
     bool isRunning = true; 
     while (isRunning)
     {
