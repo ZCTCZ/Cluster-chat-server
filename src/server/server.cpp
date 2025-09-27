@@ -36,24 +36,16 @@ void ClusterChatServer::onConnected(const muduo::net::TcpConnectionPtr &pConn)
 {
     if (!pConn->connected()) // 有连接断开（无论是客户端主动发起的断开，还是服务器关闭导致的客户端连接断开，都会触发onConnected回调）
     {
-        ClusterChatService::getInstance()->handleClientExit(pConn); // 处理客户端断开后的状态清理，将断开连接的用户的状态更新为离线
+        ClusterChatService::getInstance()->handleClientExit(pConn); // 处理客户端TCP连接断开后的状态清理，将断开连接的用户的状态更新为离线
 
-        auto& userConnMap = (ClusterChatService::getInstance())->getUserConnMap();
-        std::lock_guard<std::mutex> lock((ClusterChatService::getInstance())->_mtx);
+        auto& userConnMap = (ClusterChatService::getInstance())->getUserConnMap(); 
+        std::lock_guard<std::mutex> lock((ClusterChatService::getInstance())->_mtx); // 这两行代码不能交换，否则将导致死锁
 
         if (_shuttingDown.load() && userConnMap.empty()) // 如果服务器正在关闭，并且所有连接都断开了，通知主线程可以退出了
         {
             _shutdownCondition.notify_all(); // 所有的客户端都断开了，唤醒 waitForAllConnectionsClosed() 函数
         }
     }
-}
-
-// 停止主事件循环（负责监听新连接的EventLoop）
-void ClusterChatServer::stopEventLoop()
-{
-    muduo::net::EventLoop *mainLoop = _server.getLoop();
-    mainLoop->queueInLoop([mainLoop]
-                          { mainLoop->quit(); });
 }
 
 // 优雅地关闭所有连接，服务器发出的
@@ -109,13 +101,10 @@ void ClusterChatServer::gracefulShutdown()
     // 1. 设置关闭标志
     _shuttingDown.store(true);
 
-    // 2. 停止主事件循环（停止监听新连接）
-    stopEventLoop();
-
-    // 3. 关闭所有现有连接
+    // 2. 关闭所有现有连接
     closeAllConnections();
 
-    // 4. 等待所有连接关闭（带超时）
+    // 3. 等待所有连接关闭（带超时）
     if (!waitForAllConnectionsClosed(10))
     {
         forceCloseAllConnections();

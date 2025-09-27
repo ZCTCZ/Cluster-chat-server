@@ -38,7 +38,6 @@ private:
 	void closeAllConnections(); // 优雅地关闭所有连接
 	void forceCloseAllConnections(); // 强制关闭所有连接,一般发生在超时的时候
 	bool waitForAllConnectionsClosed(int timeoutSeconds); // 等待所有连接关闭,超时时间为timeoutSeconds秒
-	void stopEventLoop(); // 停止主事件循环
 
 	muduo::net::TcpServer _server;
 	muduo::net::EventLoop *_pLoop;

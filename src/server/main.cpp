@@ -11,7 +11,7 @@ void signalHandler(int sig)
 {
     if (sig == SIGINT || sig == SIGTERM || sig == SIGQUIT || sig == SIGSTOP)
     {
-        pServer.get()->gracefulShutdown();        
+        loop.quit();
     }
 }
 
@@ -39,6 +39,7 @@ int main(int argc, char** argv)
     pServer->start();
     loop.loop();
 
+    pServer->gracefulShutdown();
     LOG_INFO << "ClusterChatServer exit!";
     return 0;
 }

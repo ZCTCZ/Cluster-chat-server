@@ -248,7 +248,7 @@ void ClusterChatService::handleRegister(const muduo::net::TcpConnectionPtr &pCon
     }
 }
 
-// 处理客户端异常退出
+// 处理客户端异常退出（TCP连接断开）
 void ClusterChatService::handleClientExit(const muduo::net::TcpConnectionPtr &pConn)
 {
     auto it = _userConnMap.begin();
@@ -256,7 +256,7 @@ void ClusterChatService::handleClientExit(const muduo::net::TcpConnectionPtr &pC
     User user;
     {
         std::lock_guard<std::mutex> lock(_mtx); // 操作_userConnMap这种共享资源需要加锁
-        while (it != _userConnMap.end())        // 一定可以找到用户
+        while (it != _userConnMap.end()) // 用户中注销，然后退出系统，则用户的ID在_userConnMap中找不到
         {
             if (it->second == pConn)
             {
