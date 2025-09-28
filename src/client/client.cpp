@@ -140,7 +140,10 @@ void registerOpt(unsigned int socketfd)
     jsn["msgId"] = REGISTER_MSG;
     jsn["name"] = name;
     jsn["password"] = password;
-    std::string sendData = jsn.dump() + "\n";
+    std::string sendData = jsn.dump(); // 需要先序列化，再计算长度
+    uint32_t len = static_cast<uint32_t>(sendData.size());
+    uint32_t netLen = htonl(len);
+    sendData.insert(0, (char *)&netLen, sizeof(netLen));
 
     if (send(socketfd, sendData.data(), sendData.size(), 0) == -1) // 向服务器发送注册请求
     {
@@ -150,10 +153,11 @@ void registerOpt(unsigned int socketfd)
     else
     {
         std::unique_lock<std::mutex> lock(mtx);
-        cv.wait(lock);           // 等待被处理注册响应消息的线程唤醒
+        cv.wait(lock); // 等待被处理注册响应消息的线程唤醒
     }
 }
 
+// 处理服务器返回的注册响应消息
 void handleRegisterReply(const nlohmann::json &recvJson)
 {
     if (recvJson["code"] == 0) // 注册成功
@@ -191,7 +195,10 @@ void loginOpt(unsigned int socketfd)
     jsn["msgId"] = LOGIN_MSG;
     jsn["name"] = name;
     jsn["password"] = password;
-    std::string sendData = jsn.dump() + "\n";
+    std::string sendData = jsn.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.size());
+    uint32_t netLen = htonl(len);
+    sendData.insert(0, (char *)&netLen, sizeof(netLen));
 
     if (send(socketfd, sendData.data(), sendData.size(), 0) == -1) // 向服务器发送登录请求
     {
@@ -213,6 +220,7 @@ void loginOpt(unsigned int socketfd)
     }
 }
 
+// 处理服务器返回的登录响应消息
 void handleLoginReply(const nlohmann::json &recvJson)
 {
     if (recvJson["code"] == 0) // 登录成功
@@ -310,94 +318,120 @@ void handleLoginReply(const nlohmann::json &recvJson)
 // 接收数据的线程的回调函数
 void receiveTaskHandler(unsigned int socketfd)
 {
-    char buffer[1024] = {0};
-    std::string recvStr;
-
     while (true)
     {
-        memset((void *)buffer, 0, sizeof(buffer));
-        ssize_t len = recv(socketfd, buffer, sizeof(buffer), 0);
-        if (len == -1)
+        uint32_t netLen = 0; // 用来存放数据包头部的长度信息
+
+        // Step 1: 接收数据包头部的长度信息
+        ssize_t head_done = 0;
+        while (head_done < 4)
         {
-            perror("recv error");
-            continue;
-        }
-        else if (len == 0)
-        {
-            cerr << "server closed" << endl;
-            break;
-        }
-        else
-        {
-            recvStr.append(buffer, len);
-            size_t pos = 0;
-            while ((pos = recvStr.find('\n')) != std::string::npos)
+            ssize_t recvLen = recv(socketfd, (char *)&netLen + head_done, 4 - head_done, 0);
+            if (recvLen == -1)
             {
-                std::string jsonStr = recvStr.substr(0, pos);
-                recvStr.erase(0, pos + 1); // 将处理过的JSON切除掉
-                if (!jsonStr.empty())
-                {
-                    try
-                    {
-                        nlohmann::json recvJson = nlohmann::json::parse(jsonStr); // 反序列化服务器发送过来的数据
-                        if (recvJson["msgId"].get<int>() == PRIVATE_CHAT_MSG)     // 收到私聊消息
-                        {
-                            cout << "[" << recvJson["time"].get<std::string>() << "]"
-                                 << "[userId:" << recvJson["from"].get<unsigned int>() << "]"
-                                 << "[name:" << recvJson["user"].get<std::string>() << "]"
-                                 << "said: " << recvJson["message"].get<std::string>() << endl;
-                        }
-                        else if (recvJson["msgId"].get<int>() == PRIVATE_CHAT_MSG_REPLY)
-                        {
-                            cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
-                        }
-                        else if (recvJson["msgId"].get<int>() == ADD_FRIEND_MSG_REPLY)
-                        {
-                            cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
-                        }
-                        else if (recvJson["msgId"].get<int>() == CREATE_GROUP_MSG_REPLY)
-                        {
-                            cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
-                        }
-                        else if (recvJson["msgId"] == JOIN_GROUP_MSG_REPLY)
-                        {
-                            cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
-                        }
-                        else if (recvJson["msgId"].get<int>() == GROUP_CHAT_MSG)
-                        {
-                            cout << "[" << recvJson["time"].get<std::string>() << "]"
-                                 << "[userId:" << recvJson["userId"].get<unsigned int>() << "]"
-                                 << "[name:" << recvJson["user"].get<std::string>() << "]"
-                                 << "at group[" << recvJson["groupId"].get<unsigned int>() << "]"
-                                 << "said: " << recvJson["message"].get<std::string>() << endl;
-                        }
-                        else if (recvJson["msgId"] == GROUP_CHAT_MSG_REPLY)
-                        {
-                            cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
-                        }
-                        else if (recvJson["msgId"] == LOGIN_MSG_REPLY)
-                        {
-                            handleLoginReply(recvJson);
-                        }
-                        else if (recvJson["msgId"] == REGISTER_MSG_REPLY)
-                        {
-                            handleRegisterReply(recvJson);
-                        }
-                        else if (recvJson["msgId"] == LOGOUT_MSG_REPLY)
-                        {
-                            cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
-                        }
-                    }
-                    catch (std::exception &e)
-                    {
-                        cerr << "json parse error: " << e.what() << endl;
-                    }
-                }
+                perror("recv error");
+                mainMenuRunning = false;
+                isRunning = false;
+                return;
             }
+            else if (recvLen == 0)
+            {
+                cout << "server closed" << endl;
+                mainMenuRunning = false;
+                isRunning = false;
+                return;
+            }
+            else
+            {
+                head_done += recvLen;
+            }
+        }
+
+        uint32_t hostLen = ntohl(netLen);
+        if (hostLen > 64 * 1024)
+        {
+            mainMenuRunning = false;
+            isRunning = false;
+            return;
+        }
+
+        // Step 2: 接收数据包的body信息
+        char buffer[1024 * 64] = {0};
+        ssize_t body_done = 0;
+        while (body_done < hostLen)
+        {
+            ssize_t recvLen = recv(socketfd, buffer + body_done, hostLen - body_done, 0);
+            if (recvLen == -1)
+            {
+                perror("recv error");
+                mainMenuRunning = false;
+                isRunning = false;
+                return;
+            }
+            else if (recvLen == 0)
+            {
+                cout << "server closed" << endl;
+                mainMenuRunning = false;
+                isRunning = false;
+                return;
+            }
+            else
+            {
+                body_done += recvLen;
+            }
+        }
+
+        std::string jsonStr(buffer, hostLen);
+        nlohmann::json recvJson = nlohmann::json::parse(jsonStr); // 反序列化服务器发送过来的数据
+        if (recvJson["msgId"].get<int>() == PRIVATE_CHAT_MSG)     // 收到私聊消息
+        {
+            cout << "[" << recvJson["time"].get<std::string>() << "]"
+                 << "[userId:" << recvJson["from"].get<unsigned int>() << "]"
+                 << "[name:" << recvJson["user"].get<std::string>() << "]"
+                 << "said: " << recvJson["message"].get<std::string>() << endl;
+        }
+        else if (recvJson["msgId"].get<int>() == PRIVATE_CHAT_MSG_REPLY)
+        {
+            cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
+        }
+        else if (recvJson["msgId"].get<int>() == ADD_FRIEND_MSG_REPLY)
+        {
+            cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
+        }
+        else if (recvJson["msgId"].get<int>() == CREATE_GROUP_MSG_REPLY)
+        {
+            cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
+        }
+        else if (recvJson["msgId"] == JOIN_GROUP_MSG_REPLY)
+        {
+            cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
+        }
+        else if (recvJson["msgId"].get<int>() == GROUP_CHAT_MSG)
+        {
+            cout << "[" << recvJson["time"].get<std::string>() << "]"
+                 << "[userId:" << recvJson["userId"].get<unsigned int>() << "]"
+                 << "[name:" << recvJson["user"].get<std::string>() << "]"
+                 << "at group[" << recvJson["groupId"].get<unsigned int>() << "]"
+                 << "said: " << recvJson["message"].get<std::string>() << endl;
+        }
+        else if (recvJson["msgId"] == GROUP_CHAT_MSG_REPLY)
+        {
+            cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
+        }
+        else if (recvJson["msgId"] == LOGIN_MSG_REPLY)
+        {
+            handleLoginReply(recvJson);
+        }
+        else if (recvJson["msgId"] == REGISTER_MSG_REPLY)
+        {
+            handleRegisterReply(recvJson);
+        }
+        else if (recvJson["msgId"] == LOGOUT_MSG_REPLY)
+        {
+            cout << "[" << recvJson["msg"].get<std::string>() << "]" << endl;
         }
     }
 }
-
 // 主菜单
 void mainMenu(unsigned int socketfd)
 {
@@ -459,6 +493,11 @@ void help(unsigned int socketfd, std::string str)
 void chat(unsigned int socketfd, std::string str)
 {
     auto index = str.find_first_of(':');
+    if (index == std::string::npos)
+    {
+        cerr << "invalid command" << endl;
+        return;
+    }
     unsigned int friendId = std::stoi(str.substr(0, index));
     std::string message = str.substr(index + 1);
 
@@ -470,7 +509,11 @@ void chat(unsigned int socketfd, std::string str)
     sendJson["message"] = message;
     sendJson["time"] = getCurrentTime();
 
-    std::string sendData = sendJson.dump() + "\n";
+    std::string sendData = sendJson.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.size());
+    uint32_t netLen = htonl(len);
+    
+    sendData.insert(0, (char *)&netLen, sizeof(netLen));
     if (send(socketfd, sendData.data(), sendData.size(), 0) == -1)
     {
         perror("send error");
@@ -493,7 +536,10 @@ void addfriend(unsigned int socketfd, std::string str)
     sendJson["id"] = g_currentUser.getId();
     sendJson["friendId"] = std::stoi(str);
 
-    std::string sendData = sendJson.dump() + "\n";
+    std::string sendData = sendJson.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.size());
+    uint32_t netLen = htonl(len);
+    sendData.insert(0, (char *)&netLen, sizeof(netLen));
 
     if (send(socketfd, sendData.data(), sendData.size(), 0) == -1)
     {
@@ -529,7 +575,11 @@ void creategroup(unsigned int socketfd, std::string str)
     sendJson["groupName"] = groupName;
     sendJson["groupDesc"] = groupDesc;
 
-    std::string sendData = sendJson.dump() + "\n";
+    std::string sendData = sendJson.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.size());
+    uint32_t netLen = htonl(len);
+    sendData.insert(0, (char *)&netLen, sizeof(netLen));
+
     if (send(socketfd, sendData.data(), sendData.size(), 0) == -1)
     {
         perror("send error");
@@ -552,7 +602,11 @@ void addgroup(unsigned int socketfd, std::string str)
     sendJson["userId"] = g_currentUser.getId();
     sendJson["groupId"] = std::stoi(str);
 
-    std::string sendData = sendJson.dump() + "\n";
+    std::string sendData = sendJson.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.size());
+    uint32_t netLen = htonl(len);
+    sendData.insert(0, (char *)&netLen, sizeof(netLen));
+
     if (send(socketfd, sendData.data(), sendData.size(), 0) == -1)
     {
         perror("send error");
@@ -591,7 +645,11 @@ void groupchat(unsigned int socketfd, std::string str)
     sendJson["message"] = message;
     sendJson["time"] = getCurrentTime();
 
-    std::string sendData = sendJson.dump() + "\n";
+    std::string sendData = sendJson.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.size());
+    uint32_t netLen = htonl(len);
+    sendData.insert(0, (char *)&netLen, sizeof(netLen));
+
     if (send(socketfd, sendData.data(), sendData.size(), 0) == -1)
     {
         perror("send error");
@@ -612,7 +670,11 @@ void logout(unsigned int socketfd, std::string str)
     sendJson["msgId"] = LOGOUT_MSG;
     sendJson["userId"] = g_currentUser.getId();
 
-    std::string sendData = sendJson.dump() + "\n";
+    std::string sendData = sendJson.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.size());
+    uint32_t netLen = htonl(len);
+    sendData.insert(0, (char *)&netLen, sizeof(netLen));
+
     if (send(socketfd, sendData.data(), sendData.size(), 0) == -1)
     {
         perror("send error");

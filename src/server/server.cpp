@@ -111,19 +111,41 @@ void ClusterChatServer::gracefulShutdown()
     }
 }
 
-// 客户端 发送消息（数据） 的回调
+// 接收到客户端 发送消息（数据） 的回调
 // 函数将根据不同的消息类型，做出相应的处理
 void ClusterChatServer::onMessage(const muduo::net::TcpConnectionPtr &pConn, muduo::net::Buffer *buffer, muduo::Timestamp timetmp)
 {
-    // 从buffer获取客户端发送过来的数据
-    std::string buf = buffer->retrieveAllAsString();
+    while (buffer->readableBytes() >= 4) // 返回buffer缓冲区中数据的字节数
+    {
+        // 读取4字节的消息长度
+        uint32_t len = buffer->peekInt32(); // 查看缓冲区开头的 4 个字节，并将其解释为一个 32 位整数
 
-    // 数据反序列化
-    nlohmann::json jsn = nlohmann::json::parse(buf);
+        // 检查消息体是否完整
+        if (buffer->readableBytes() >= len + 4) //检查消息体是否完整
+        {
+            // 消耗掉4字节的报头
+            buffer->retrieve(4);
+            // 读取消息体
+            std::string buf = buffer->retrieveAsString(len); // 从缓冲区中读取 len 字节的消息体
 
-    // 获取处理消息的函数
-    auto msgHandle = (ClusterChatService::getInstance())->getHandle(jsn["msgId"].get<int>());
+            // 数据反序列化
+            nlohmann::json jsn = nlohmann::json::parse(buf);
 
-    // 处理消息
-    msgHandle(pConn, jsn, timetmp);
+            // 获取处理消息的函数
+            auto msgHandle = (ClusterChatService::getInstance())->getHandle(jsn["msgId"].get<int>());
+
+            // 处理消息
+            msgHandle(pConn, jsn, timetmp);
+        }
+        else if (buffer->readableBytes() > 64 * 1024 * 1024) // 超过 64M，则关闭连接，防止炸弹
+        {
+            pConn->shutdown();
+            break;
+        }
+        else
+        {
+            // 消息不完整，等待下一次读取
+            break;
+        }
+    }
 }

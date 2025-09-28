@@ -1,6 +1,7 @@
 #include "../../include/client/client.h"
 #include <string>
 #include <memory>
+bool isRunning = true; 
 
 int main(int argc, char** argv)
 {
@@ -44,7 +45,6 @@ int main(int argc, char** argv)
     std::thread receiveTask(receiveTaskHandler, fd);
     receiveTask.detach();
 
-    bool isRunning = true; 
     while (isRunning)
     {
         int choice = loginMenu(); //登录页面

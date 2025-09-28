@@ -152,7 +152,8 @@ void ClusterChatService::handleLogin(const muduo::net::TcpConnectionPtr &pConn, 
                         friendInfo["id"] = user.getId();
                         friendInfo["name"] = user.getName();
                         friendInfo["state"] = user.getState();
-                        friendList.push_back(friendInfo.dump() + "\n"); // 将Json序列化为字符串后再存入
+                
+                        friendList.push_back(friendInfo.dump()); // 将Json序列化为字符串后再存入
                     }
                     response["friends"] = friendList;
                 }
@@ -177,36 +178,41 @@ void ClusterChatService::handleLogin(const muduo::net::TcpConnectionPtr &pConn, 
                             userInfo["name"] = user.getName();
                             userInfo["state"] = user.getState();
                             userInfo["role"] = user.getRole();
-                            groupMembers.push_back(userInfo.dump() + "\n");
+                            groupMembers.push_back(userInfo.dump());
                         }
                         groupInfo["groupMembers"] = groupMembers;
-                        groupList.push_back(groupInfo.dump() + "\n");
+                        groupList.push_back(groupInfo.dump());
                     }
                     response["groups"] = groupList;
                 }
-
-                pConn->send(response.dump() + "\n");
             }
             else // 更新用户状态失败
             {
                 response["code"] = -3;
                 response["msg"] = "update state error";
-                pConn->send(response.dump() + "\n");
             }
         }
         else // 用户状态为已在线，无法重复登录
         {
             response["code"] = -1;
             response["msg"] = "user is online";
-            pConn->send(response.dump() + "\n");
         }
     }
     else // 用户名或密码错误
     {
         response["code"] = -2;
         response["msg"] = "username or password error";
-        pConn->send(response.dump() + "\n");
     }
+
+    std::string sendData = response.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.length()); //获取JSON字符串长度,不统计最后的\0
+    uint32_t netLen = muduo::net::sockets::hostToNetwork32(len); //转换为网络字节序
+
+    muduo::net::Buffer buf;
+    buf.append(&netLen, sizeof(netLen)); // 添加4字节头
+    buf.append(sendData);                // 添加JSON字符串,但最后的\0不包括在内
+
+    pConn->send(&buf);
 }
 
 /**
@@ -238,14 +244,22 @@ void ClusterChatService::handleRegister(const muduo::net::TcpConnectionPtr &pCon
         response["msg"] = "register success";
         response["id"] = user.getId();
         response["name"] = user.getName();
-        pConn->send(response.dump() + "\n");
     }
     else
     {
         response["code"] = -1;
         response["msg"] = "register failed";
-        pConn->send(response.dump() + "\n");
     }
+
+    std::string sendData = response.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.length()); //获取JSON字符串长度,不统计最后的\0
+    uint32_t netLen = muduo::net::sockets::hostToNetwork32(len); //转换为网络字节序
+
+    muduo::net::Buffer buf;
+    buf.append(&netLen, sizeof(netLen)); // 添加4字节头
+    buf.append(sendData);                // 添加JSON字符串,但最后的\0不包括在内
+
+    pConn->send(&buf);
 }
 
 // 处理客户端异常退出（TCP连接断开）
@@ -310,7 +324,16 @@ void ClusterChatService::handleClientLogout(const muduo::net::TcpConnectionPtr &
     response["msgId"] = LOGOUT_MSG_REPLY;
     response["code"] = 0;
     response["msg"] = "logout success";
-    pConn->send(response.dump() + "\n");
+
+    std::string sendData = response.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.length()); //获取JSON字符串长度,不统计最后的\0
+    uint32_t netLen = muduo::net::sockets::hostToNetwork32(len); //转换为网络字节序
+
+    muduo::net::Buffer buf;
+    buf.append(&netLen, sizeof(netLen)); // 添加4字节头
+    buf.append(sendData);                // 添加JSON字符串,但最后的\0不包括在内
+
+    pConn->send(&buf);
 }
 
 /**
@@ -336,8 +359,15 @@ void ClusterChatService::handlePrivateChat(const muduo::net::TcpConnectionPtr &p
         auto it = _userConnMap.find(toUserId);
         if (it != _userConnMap.end()) // 找到接收者的连接，说明该接受者在线
         {
-            (it->second)->send(jsn.dump() + "\n"); // 将消息转发给接收者
-            return;
+            std::string sendData = jsn.dump();
+            uint32_t len = static_cast<uint32_t>(sendData.length()); //获取JSON字符串长度,不统计最后的\0
+            uint32_t netLen = muduo::net::sockets::hostToNetwork32(len); //转换为网络字节序
+
+            muduo::net::Buffer buf;
+            buf.append(&netLen, sizeof(netLen)); // 添加4字节头
+            buf.append(sendData);                // 添加JSON字符串,但最后的\0不包括在内
+
+            (it->second)->send(&buf); // 发送消息到接收者
         }
     }
 
@@ -346,18 +376,27 @@ void ClusterChatService::handlePrivateChat(const muduo::net::TcpConnectionPtr &p
     if (fromUser.getState() == "online") // 接收者在线，只不过在其他的服务器上面登录了
     {
         // 将消息发送给redis频道，由订阅该频道的服务器接收
-        _redis.publish(toUserId, jsn.dump() + "\n");
+        _redis.publish(toUserId, jsn.dump());
     }
-    else // 接受者不在线，将消息存入OfflineMessage表，待接收者上线后再发送
+    else // 接受者不在线，将消息存入OfflineMessage表，待接收者上线后再发送，此时就不需要再存入前缀长度了
     {
-        _offlineMessageModel.storeOfflineMessage(OfflineMessage(toUserId, jsn.dump() + "\n")); // 将json序列化之后再存入数据库
+        _offlineMessageModel.storeOfflineMessage(OfflineMessage(toUserId, jsn.dump())); // 将json序列化之后再存入数据库
     }
 
     nlohmann::json response;
     response["msgId"] = PRIVATE_CHAT_MSG_REPLY;
     response["code"] = 0;
     response["msg"] = "send success";
-    pConn->send(response.dump() + "\n"); // 发送消息到发送者, 告知消息发送成功
+
+    std::string sendData = response.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.length()); //获取JSON字符串长度,不统计最后的\0
+    uint32_t netLen = muduo::net::sockets::hostToNetwork32(len); //转换为网络字节序
+
+    muduo::net::Buffer buf;
+    buf.append(&netLen, sizeof(netLen)); // 添加4字节头
+    buf.append(sendData);                // 添加JSON字符串,但最后的\0不包括在内
+
+    pConn->send(&buf); // 发送消息到发送者, 告知消息发送成功
 }
 
 /**
@@ -391,7 +430,15 @@ void ClusterChatService::handleAddFriend(const muduo::net::TcpConnectionPtr &pCo
         response["msg"] = "user not exist";
     }
 
-    pConn->send(response.dump() + "\n");
+    std::string sendData = response.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.length()); //获取JSON字符串长度,不统计最后的\0
+    uint32_t netLen = muduo::net::sockets::hostToNetwork32(len); //转换为网络字节序
+
+    muduo::net::Buffer buf;
+    buf.append(&netLen, sizeof(netLen)); // 添加4字节头
+    buf.append(sendData);                // 添加JSON字符串,但最后的\0不包括在内
+
+    pConn->send(&buf); // 发送消息到发送者, 告知消息发送成功
 }
 
 /**
@@ -427,7 +474,15 @@ void ClusterChatService::handleCreateGroup(const muduo::net::TcpConnectionPtr &p
         response["msg"] = "create group failed";
     }
 
-    pConn->send(response.dump() + "\n");
+    std::string sendData = response.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.length()); //获取JSON字符串长度,不统计最后的\0
+    uint32_t netLen = muduo::net::sockets::hostToNetwork32(len); //转换为网络字节序
+
+    muduo::net::Buffer buf;
+    buf.append(&netLen, sizeof(netLen)); // 添加4字节头
+    buf.append(sendData);                // 添加JSON字符串,但最后的\0不包括在内
+
+    pConn->send(&buf); // 发送消息到发送者, 告知消息发送成功
 
     if (response["code"] == 0)
     {
@@ -466,7 +521,15 @@ void ClusterChatService::handleJoinGroup(const muduo::net::TcpConnectionPtr &pCo
         response["msg"] = "join group failed";
     }
 
-    pConn->send(response.dump() + "\n");
+    std::string sendData = response.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.length()); //获取JSON字符串长度,不统计最后的\0
+    uint32_t netLen = muduo::net::sockets::hostToNetwork32(len); //转换为网络字节序
+
+    muduo::net::Buffer buf;
+    buf.append(&netLen, sizeof(netLen)); // 添加4字节头
+    buf.append(sendData);                // 添加JSON字符串,但最后的\0不包括在内
+
+    pConn->send(&buf); // 发送消息到发送者, 告知消息发送成功
 }
 
 /**
@@ -497,18 +560,26 @@ void ClusterChatService::handleGroupChat(const muduo::net::TcpConnectionPtr &pCo
         auto it = _userConnMap.find(toUserId);
         if (it != _userConnMap.end()) // 用户在线，直接转发
         {
-            it->second->send(jsn.dump() + "\n");
+            std::string sendData = jsn.dump();
+            uint32_t len = static_cast<uint32_t>(sendData.length()); //获取JSON字符串长度,不统计最后的\0
+            uint32_t netLen = muduo::net::sockets::hostToNetwork32(len); //转换为网络字节序
+
+            muduo::net::Buffer buf;
+            buf.append(&netLen, sizeof(netLen)); // 添加4字节头
+            buf.append(sendData);                // 添加JSON字符串,但最后的\0不包括在内
+
+            it->second->send(&buf); // 发送消息到发送者, 告知消息发送成功
         }
         else // 用户不在线，或者不在该台服务器上登录
         {
-            auto fromUser = _userModel.QueryById(userId);
+            auto fromUser = _userModel.QueryById(toUserId);
             if (fromUser.getState() == "online") // 用户在线，只不过在其他的服务器上面登录了
             {
-                _redis.publish(toUserId, jsn.dump() + "\n"); // 将消息发送给redis频道，由订阅该频道的服务器接收
+                _redis.publish(toUserId, jsn.dump()); // 将消息发送给redis频道，由订阅该频道的服务器接收、redis客户端会按照RESP协议自动封装数据
             }
             else // 用户离线，将消息存入OfflineMessage表
             {
-                _offlineMessageModel.storeOfflineMessage(OfflineMessage(toUserId, jsn.dump() + "\n"));
+                _offlineMessageModel.storeOfflineMessage(OfflineMessage(toUserId, jsn.dump()));
             }
         }
     }
@@ -517,7 +588,16 @@ void ClusterChatService::handleGroupChat(const muduo::net::TcpConnectionPtr &pCo
     response["msgId"] = GROUP_CHAT_MSG_REPLY;
     response["code"] = 0;
     response["msg"] = "send success";
-    pConn->send(response.dump() + "\n");
+    
+    std::string sendData = response.dump();
+    uint32_t len = static_cast<uint32_t>(sendData.length()); //获取JSON字符串长度,不统计最后的\0
+    uint32_t netLen = muduo::net::sockets::hostToNetwork32(len); //转换为网络字节序
+
+    muduo::net::Buffer buf;
+    buf.append(&netLen, sizeof(netLen)); // 添加4字节头
+    buf.append(sendData);                // 添加JSON字符串,但最后的\0不包括在内
+
+    pConn->send(&buf); // 发送消息到发送者, 告知消息发送成功
 }
 
 // 处理从Redis发来的订阅消息
@@ -528,7 +608,13 @@ void ClusterChatService::handleRedisSubscribeMessage(unsigned int channel, const
         auto it = _userConnMap.find(channel);
         if (it != _userConnMap.end())
         {
-            it->second->send(message); // 将消息转发给用户
+            uint32_t len = static_cast<uint32_t>(message.length());
+            uint32_t netLen = muduo::net::sockets::hostToNetwork32(len);
+            
+            muduo::net::Buffer buf;
+            buf.append(&netLen, sizeof(netLen));
+            buf.append(message);
+            it->second->send(&buf); // 将消息转发给用户
             return;
         }
     }

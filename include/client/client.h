@@ -16,6 +16,7 @@
 extern std::mutex mtx;
 extern std::condition_variable cv;
 extern std::atomic<bool> loginSuccess;
+extern bool isRunning;
 
 using std::cout;
 using std::endl;
