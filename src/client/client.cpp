@@ -85,7 +85,7 @@ void showCurrentUserData(unsigned int socketfd, std::string str)
         {
             cout << "group  ID: " << std::setw(3) << std::left << e.getGroupId()
                  << "group name: " << std::setw(15) << std::left << e.getGroupName()
-                 << "desc: " << e.getGroupDescription() << std::left << endl;
+                 << "desc: " <<std::setw(30) << e.getGroupDescription() << std::left << endl;
             for (const auto &user : e.getGroupMembers())
             {
                 cout << "member ID: " << std::setw(3) << std::left << user.getId()

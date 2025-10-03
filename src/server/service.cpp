@@ -60,6 +60,14 @@ ClusterChatService::ClusterChatService()
                                         this->handleRedisSubscribeMessage(channel, message); 
                                     });
     }
+
+    // 启动数据库连接池
+    auto pMcp = MySQLConnectionPool::getInstance();
+    static std::once_flag flag;
+	std::call_once(flag, [&] {
+		pMcp->startProduceThread(); // 启动生产数据库连接的生产者线程
+		pMcp->startMonitorThread(); // 启动监视数据库空闲连接存活时间的监视者线程 
+		});
 }
 
 // 获取业务类的实例（懒汉模式）

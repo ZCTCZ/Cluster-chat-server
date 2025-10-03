@@ -2,6 +2,8 @@ set(SRC_LIST
     main.cpp
     server.cpp
     service.cpp
+    db/Connection.cpp
+    db/MySQLConnectionPool.cpp
     db/database.cpp
     model/usermodel.cpp
     model/offlinemessagemodel.cpp
@@ -19,4 +21,4 @@ target_include_directories(ClusterChatServer.out PUBLIC
                             ${PROJECT_SOURCE_DIR}/include/server/redis
                             ${PROJECT_BINARY_DIR}/include/client)
 
-target_link_libraries(ClusterChatServer.out muduo_net muduo_base mysqlclient hiredis pthread)
+target_link_libraries(ClusterChatServer.out muduo_net muduo_base mysqlcppconn hiredis pthread)

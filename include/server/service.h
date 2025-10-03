@@ -22,11 +22,15 @@
 #include "model/friendmodel.h"
 #include "model/groupmodel.h"
 #include "redis/redis.h"
+#include "db/MySQLConnectionPool.h"
 
 // 处理业务的类
 class ClusterChatService
 {
 public:
+    ClusterChatService(const ClusterChatService&) = delete;
+    ClusterChatService& operator=(ClusterChatService&) = delete;
+
     std::mutex _mtx; // 互斥变量
     
     using MsgHandle = std::function<void(const muduo::net::TcpConnectionPtr& pConn, nlohmann::json jsn, muduo::Timestamp timetmp)>;

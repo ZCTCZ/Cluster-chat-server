@@ -51,7 +51,7 @@ bool Redis::connect()
 }
 
 // 向redis指定的通道channel发布消息     
-bool Redis::publish(int channel, string message)
+bool Redis::publish(int channel, const string& message)
 {
     redisReply *reply = (redisReply *)redisCommand(_publish_context, "PUBLISH %d %s", channel, message.c_str());
     if (nullptr == reply)
